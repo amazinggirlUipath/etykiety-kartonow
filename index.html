@@ -210,36 +210,53 @@ function generate() {
       var pageWidth = pdf.internal.pageSize.getWidth();
       var pageHeight = pdf.internal.pageSize.getHeight();
 
-      // Helper: dobiera rozmiar czcionki tytulu zeby zmiescil sie w max 4 liniach
-      // WAZNE: ustawia bold PRZED pomiarem, bo splitTextToSize uzywa aktualnej czcionki
-      function fitProductName(text, maxWidth) {
-        var candidateSizes = [12, 11, 10, 9, 8];
-        for (var i = 0; i < candidateSizes.length; i++) {
-          pdf.setFont(undefined, 'bold');
-          pdf.setFontSize(candidateSizes[i]);
-          var lines = pdf.splitTextToSize(text, maxWidth);
-          if (lines.length <= 4) return { size: candidateSizes[i], lines: lines };
+      // Helper: manualne zawijanie tekstu - niezawodne, mierzy kazda linie przez getTextWidth
+      function wrapText(text, maxWidth) {
+        var words = String(text).split(/\s+/).filter(Boolean);
+        var lines = [];
+        var current = '';
+        for (var i = 0; i < words.length; i++) {
+          var test = current ? current + ' ' + words[i] : words[i];
+          if (pdf.getTextWidth(test) <= maxWidth) {
+            current = test;
+          } else {
+            if (current) lines.push(current);
+            current = words[i];
+          }
         }
-        pdf.setFont(undefined, 'bold');
-        pdf.setFontSize(7);
-        return { size: 7, lines: pdf.splitTextToSize(text, maxWidth) };
+        if (current) lines.push(current);
+        return lines;
+      }
+
+      // Helper: dobiera rozmiar czcionki nazwy produktu (drobny druk)
+      function fitProductName(text, maxWidth) {
+        var candidateSizes = [10, 9, 8, 7];
+        for (var i = 0; i < candidateSizes.length; i++) {
+          pdf.setFont(undefined, 'normal');
+          pdf.setFontSize(candidateSizes[i]);
+          var lines = wrapText(text, maxWidth);
+          if (lines.length <= 5) return { size: candidateSizes[i], lines: lines };
+        }
+        pdf.setFont(undefined, 'normal');
+        pdf.setFontSize(6);
+        return { size: 6, lines: wrapText(text, maxWidth) };
       }
 
       codes.forEach(function(code, i) {
         if (i > 0) pdf.addPage();
 
-        // 1) NAZWA PRODUKTU - rozmiar jak SKU, dynamicznie zmniejszany dla dlugich nazw
-        if (productName) {
-          var fitted = fitProductName(String(productName), pageWidth - 50);
-          pdf.setFont(undefined, 'bold');
-          pdf.setFontSize(fitted.size);
-          pdf.text(fitted.lines, pageWidth / 2, 35, { align: 'center' });
+        // 1) SKU - na samej gorze, wieksze, pogrubione
+        if (sku) {
+          pdf.setFontSize(16); pdf.setFont(undefined, 'bold');
+          pdf.text('SKU: ' + sku, pageWidth / 2, 30, { align: 'center' });
         }
 
-        // 2) SKU
-        if (sku) {
-          pdf.setFontSize(12); pdf.setFont(undefined, 'normal');
-          pdf.text('SKU: ' + sku, pageWidth / 2, 65, { align: 'center' });
+        // 2) NAZWA PRODUKTU - pod SKU, drobny druk (regular)
+        if (productName) {
+          var fitted = fitProductName(String(productName), pageWidth - 40);
+          pdf.setFont(undefined, 'normal');
+          pdf.setFontSize(fitted.size);
+          pdf.text(fitted.lines, pageWidth / 2, 45, { align: 'center' });
         }
 
         // 3) Naglowek "Karton X z Y"
