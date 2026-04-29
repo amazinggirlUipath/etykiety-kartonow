@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<title>Pobieranie etykiet...</title>
+<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    margin: 0;
+    background: #fafafa;
+    color: #555;
+  }
+  .box { text-align: center; padding: 24px; }
+  .spinner {
+    width: 28px; height: 28px;
+    border: 3px solid #e0e0e0; border-top-color: #2c5282;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin: 0 auto 14px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #status { font-size: 14px; }
+  .err { color: #c33; }
+  .err + #spinner { display: none; }
+  .back-link {
+    display: inline-block; margin-top: 16px;
+    color: #2c5282; text-decoration: none; font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<div class="box">
+  <div class="spinner" id="spinner"></div>
+  <div id="status">Generuje PDF...</div>
+  <a href="#" class="back-link" id="backLink" style="display:none" onclick="returnToRagic(); return false;">Wroc do Ragic</a>
+</div>
+
+<script>
+function setStatus(msg, isErr) {
+  var el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = isErr ? 'err' : '';
+  if (isErr) {
+    document.getElementById('spinner').style.display = 'none';
+    document.getElementById('backLink').style.display = 'inline-block';
+  }
+}
+
+function returnToRagic() {
+  // Probujemy zamknac karte (dziala tylko jesli zostala otwarta przez window.open)
+  try { window.close(); } catch(e) {}
+  // Fallback: cofnij sie w historii do Ragica
+  setTimeout(function() {
+    if (window.history.length > 1) {
+      window.history.back();
+    }
+  }, 80);
+}
+
+function generate() {
+  try {
+    var params = new URLSearchParams(window.location.search);
+    var codesParam = params.get('codes') || '';
+    var order = params.get('order') || 'zamowienie';
+
+    var codes = codesParam.split(/[,;]/).map(function(c){return c.trim();}).filter(function(c){return c.length > 0;});
+
+    if (codes.length === 0) {
+      setStatus('Brak kodow w URL-u', true);
+      return;
+    }
+
+    var jsPDF = window.jspdf.jsPDF;
+    var pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    var pageWidth = pdf.internal.pageSize.getWidth();
+    var pageHeight = pdf.internal.pageSize.getHeight();
+
+    codes.forEach(function(code, i) {
+      if (i > 0) pdf.addPage();
+
+      var canvas = document.createElement('canvas');
+      JsBarcode(canvas, code, {
+        format: 'CODE128',
+        width: 3,
+        height: 120,
+        displayValue: true,
+        fontSize: 22,
+        margin: 10
+      });
+
+      var imgData = canvas.toDataURL('image/png');
+      var barcodeWidth = 160;
+      var barcodeHeight = 60;
+      var x = (pageWidth - barcodeWidth) / 2;
+      var y = (pageHeight - barcodeHeight) / 2 - 10;
+
+      pdf.setFontSize(22);
+      pdf.setFont(undefined, 'bold');
+      pdf.text('Karton ' + (i + 1) + ' z ' + codes.length, pageWidth / 2, y - 25, { align: 'center' });
+
+      pdf.addImage(imgData, 'PNG', x, y, barcodeWidth, barcodeHeight);
+
+      pdf.setFontSize(14);
+      pdf.setFont(undefined, 'normal');
+      pdf.text('Zamowienie: ' + order, pageWidth / 2, y + barcodeHeight + 20, { align: 'center' });
+    });
+
+    var fileName = 'etykiety_' + order.replace(/[\/\\:*?"<>|]/g, '_') + '.pdf';
+    pdf.save(fileName);
+
+    setStatus('Pobrano. Wracam do Ragic...');
+    // Daj przegladarce ~700ms na zainicjowanie pobrania, potem wroc
+    setTimeout(returnToRagic, 700);
+
+  } catch (err) {
+    setStatus('Blad: ' + err.message, true);
+    console.error(err);
+  }
+}
+
+if (document.readyState === 'complete') {
+  generate();
+} else {
+  window.addEventListener('load', generate);
+}
+</script>
+
+</body>
+</html>
