@@ -210,26 +210,29 @@ function generate() {
       var pageWidth = pdf.internal.pageSize.getWidth();
       var pageHeight = pdf.internal.pageSize.getHeight();
 
-      // Helper: dobiera rozmiar czcionki tytulu zeby zmiescil sie w max 3 liniach
-      // Zwraca { size: N, lines: [...] }
+      // Helper: dobiera rozmiar czcionki tytulu zeby zmiescil sie w max 4 liniach
+      // WAZNE: ustawia bold PRZED pomiarem, bo splitTextToSize uzywa aktualnej czcionki
       function fitProductName(text, maxWidth) {
-        var candidateSizes = [18, 16, 14, 12, 11, 10];
+        var candidateSizes = [12, 11, 10, 9, 8];
         for (var i = 0; i < candidateSizes.length; i++) {
+          pdf.setFont(undefined, 'bold');
           pdf.setFontSize(candidateSizes[i]);
           var lines = pdf.splitTextToSize(text, maxWidth);
-          if (lines.length <= 3) return { size: candidateSizes[i], lines: lines };
+          if (lines.length <= 4) return { size: candidateSizes[i], lines: lines };
         }
-        pdf.setFontSize(9);
-        return { size: 9, lines: pdf.splitTextToSize(text, maxWidth) };
+        pdf.setFont(undefined, 'bold');
+        pdf.setFontSize(7);
+        return { size: 7, lines: pdf.splitTextToSize(text, maxWidth) };
       }
 
       codes.forEach(function(code, i) {
         if (i > 0) pdf.addPage();
 
-        // 1) NAZWA PRODUKTU - dynamiczny rozmiar, szerszy margines
+        // 1) NAZWA PRODUKTU - rozmiar jak SKU, dynamicznie zmniejszany dla dlugich nazw
         if (productName) {
-          var fitted = fitProductName(String(productName), pageWidth - 40);
-          pdf.setFontSize(fitted.size); pdf.setFont(undefined, 'bold');
+          var fitted = fitProductName(String(productName), pageWidth - 50);
+          pdf.setFont(undefined, 'bold');
+          pdf.setFontSize(fitted.size);
           pdf.text(fitted.lines, pageWidth / 2, 35, { align: 'center' });
         }
 
