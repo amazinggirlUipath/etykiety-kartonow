@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<title>Generator etykiet kartonów</title>
+<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    max-width: 600px;
+    margin: 60px auto;
+    padding: 24px;
+    color: #222;
+  }
+  h1 { font-size: 22px; font-weight: 500; margin-bottom: 24px; }
+  #status { padding: 16px; border-radius: 8px; background: #f3f3f3; margin: 16px 0; }
+  #status.ok { background: #e3f5e3; }
+  #status.err { background: #fce3e3; }
+  .preview { margin: 24px 0; }
+  .preview canvas { display: block; margin: 0 auto; max-width: 100%; }
+  button {
+    background: #2c5282; color: white; border: none; padding: 10px 20px;
+    border-radius: 6px; cursor: pointer; font-size: 14px;
+  }
+  button:hover { background: #2a4a6e; }
+  .codes-list { font-size: 13px; color: #555; margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<h1>Generator etykiet kartonów</h1>
+<div id="status">Inicjalizacja...</div>
+<div class="codes-list" id="codesList"></div>
+<div class="preview" id="preview"></div>
+<button id="regenBtn" style="display:none" onclick="generate()">Wygeneruj ponownie</button>
+
+<script>
+function setStatus(msg, type) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = type || '';
+}
+
+function generate() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const codesParam = params.get('codes') || '';
+    const order = params.get('order') || 'zamowienie';
+
+    // Obsluga zarowno przecinka jak i srednika jako separatora
+    const codes = codesParam
+      .split(/[,;]/)
+      .map(c => c.trim())
+      .filter(c => c.length > 0);
+
+    if (codes.length === 0) {
+      setStatus('Brak kodow w URL-u. Oczekiwany format: ?codes=KOD1,KOD2,KOD3&order=NUMER_ZAMOWIENIA', 'err');
+      return;
+    }
+
+    document.getElementById('codesList').textContent =
+      'Kody do wygenerowania (' + codes.length + '): ' + codes.join(', ');
+
+    setStatus('Generuje PDF dla ' + codes.length + ' kartonow...', '');
+
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+
+    const previewDiv = document.getElementById('preview');
+    previewDiv.innerHTML = '';
+
+    codes.forEach((code, i) => {
+      if (i > 0) pdf.addPage();
+
+      // Wygeneruj kod kreskowy do canvas
+      const canvas = document.createElement('canvas');
+      try {
+        JsBarcode(canvas, code, {
+          format: 'CODE128',
+          width: 3,
+          height: 120,
+          displayValue: true,
+          fontSize: 22,
+          margin: 10
+        });
+      } catch (e) {
+        setStatus('Blad generowania kodu "' + code + '": ' + e.message, 'err');
+        throw e;
+      }
+
+      // Pierwszy kod pokaz w preview
+      if (i === 0) {
+        const previewCanvas = canvas.cloneNode();
+        previewCanvas.getContext('2d').drawImage(canvas, 0, 0);
+        previewDiv.appendChild(previewCanvas);
+      }
+
+      const imgData = canvas.toDataURL('image/png');
+
+      // Layout strony A4
+      const barcodeWidth = 160;  // mm
+      const barcodeHeight = 60;  // mm
+      const x = (pageWidth - barcodeWidth) / 2;
+      const y = (pageHeight - barcodeHeight) / 2 - 10;
+
+      // Naglowek
+      pdf.setFontSize(22);
+      pdf.setFont(undefined, 'bold');
+      pdf.text('Karton ' + (i + 1) + ' z ' + codes.length, pageWidth / 2, y - 25, { align: 'center' });
+
+      // Kod kreskowy
+      pdf.addImage(imgData, 'PNG', x, y, barcodeWidth, barcodeHeight);
+
+      // Informacja o zamowieniu
+      pdf.setFontSize(14);
+      pdf.setFont(undefined, 'normal');
+      pdf.text('Zamowienie: ' + order, pageWidth / 2, y + barcodeHeight + 20, { align: 'center' });
+    });
+
+    const fileName = 'etykiety_' + order.replace(/[\/\\:*?"<>|]/g, '_') + '.pdf';
+    pdf.save(fileName);
+
+    setStatus('Gotowe! Plik "' + fileName + '" zostal pobrany. Mozesz zamknac to okno.', 'ok');
+    document.getElementById('regenBtn').style.display = 'inline-block';
+
+  } catch (err) {
+    setStatus('Blad: ' + err.message, 'err');
+    console.error(err);
+  }
+}
+
+// Uruchom po zaladowaniu bibliotek
+if (document.readyState === 'complete') {
+  generate();
+} else {
+  window.addEventListener('load', generate);
+}
+</script>
+
+</body>
+</html>
