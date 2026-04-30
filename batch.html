@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>Pobieranie etykiet (batch)... [v1]</title>
+<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh; margin: 0; background: #fafafa; color: #333;
+  }
+  .box { text-align: center; padding: 24px; max-width: 560px; width: 100%; }
+  .spinner {
+    width: 28px; height: 28px;
+    border: 3px solid #e0e0e0; border-top-color: #2c5282;
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+    margin: 0 auto 14px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #status { font-size: 14px; margin-bottom: 16px; }
+  .progress-bar {
+    width: 100%; height: 6px; background: #e0e0e0;
+    border-radius: 3px; overflow: hidden; margin-bottom: 16px;
+  }
+  .progress-fill {
+    height: 100%; background: #2c5282; width: 0%;
+    transition: width 0.3s ease;
+  }
+  .log {
+    text-align: left; font-size: 13px;
+    background: #fff; border: 1px solid #e0e0e0; border-radius: 6px;
+    padding: 10px 14px; max-height: 280px; overflow-y: auto;
+  }
+  .log-row { padding: 4px 0; border-bottom: 1px solid #f0f0f0; }
+  .log-row:last-child { border-bottom: none; }
+  .log-ok { color: #2a7d2a; }
+  .log-err { color: #c33; }
+  .log-pending { color: #888; }
+  .summary { margin-top: 16px; font-size: 14px; font-weight: 600; }
+  .summary.ok { color: #2a7d2a; }
+  .summary.warn { color: #b8860b; }
+  .back-link {
+    display: inline-block; margin-top: 16px;
+    color: #2c5282; text-decoration: none; font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<div class="box">
+  <div class="spinner" id="spinner"></div>
+  <div id="status">Inicjalizacja...</div>
+  <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+  <div class="log" id="log"></div>
+  <div class="summary" id="summary"></div>
+  <a href="#" class="back-link" id="backLink" style="display:none" onclick="returnToRagic(); return false;">Wroc do Ragic</a>
+</div>
+
+<script>
+// ============ KONFIGURACJA ============
+var CONFIG = {
+  BASE_URL: 'https://eu3.ragic.com/AMAZINGGIRL/wys/1',
+  API_KEY: 'QUtiQ0QyMGt2cDB0SVI1TlRBOHQrWmJPMTNCY3hJaG5RUnBQU09FdEJRSXVVeU5MdHRvT2Y3ejV1KyttWTZFWGUraTB2NGJ1bm5wVkFOcDV5WURWY0E9PQ==',
+  SUBTABLE_BARCODE_FIELD_NAME: 'NUMER KARTONU',
+  CODES_CSV_FIELD_NAME: 'KODY_KARTONOW_CSV',
+  ORDER_FIELD_NAME: 'NUMER ZAMOWIENIA',
+  PRODUCT_NAME_FIELD_NAME: 'NAZWA PRODUKTU',
+  SKU_FIELD_NAME: 'SKU',
+  PIECES_PER_BOX_FIELD_NAME: 'SZT W KARTON',
+  BARCODE_FORMAT: 'CODE128',
+
+  // Opoznienie miedzy pobraniami plikow w ms - zeby przegladarka
+  // zdazyla obsluzyc kazde pobranie osobno
+  DOWNLOAD_DELAY_MS: 800
+};
+// =======================================
+
+function setStatus(msg) {
+  document.getElementById('status').textContent = msg;
+}
+
+function setProgress(done, total) {
+  var pct = total > 0 ? (done / total) * 100 : 0;
+  document.getElementById('progressFill').style.width = pct + '%';
+}
+
+function logRow(text, type) {
+  var log = document.getElementById('log');
+  var row = document.createElement('div');
+  row.className = 'log-row log-' + (type || 'pending');
+  row.textContent = text;
+  log.appendChild(row);
+  log.scrollTop = log.scrollHeight;
+  return row;
+}
+
+function returnToRagic() {
+  try { window.close(); } catch(e) {}
+  setTimeout(function() {
+    if (window.history.length > 1) window.history.back();
+  }, 80);
+}
+
+function jsonp(url) {
+  return new Promise(function(resolve, reject) {
+    var callbackName = 'ragicCb_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
+    var script = document.createElement('script');
+    var timeout = setTimeout(function() {
+      reject(new Error('Timeout - Ragic API nie odpowiada w 15s'));
+      cleanup();
+    }, 15000);
+    function cleanup() {
+      clearTimeout(timeout);
+      delete window[callbackName];
+      if (script.parentNode) script.parentNode.removeChild(script);
+    }
+    window[callbackName] = function(data) { resolve(data); cleanup(); };
+    var sep = url.indexOf('?') === -1 ? '?' : '&';
+    script.src = url + sep + 'callback=' + callbackName;
+    script.onerror = function() {
+      reject(new Error('Blad polaczenia z Ragic API'));
+      cleanup();
+    };
+    document.head.appendChild(script);
+  });
+}
+
+function getField(data, names) {
+  for (var i = 0; i < names.length; i++) {
+    var v = data[names[i]];
+    if (v !== undefined && v !== null && v !== '') return v;
+  }
+  return '';
+}
+
+function pl2ascii(text) {
+  if (!text) return '';
+  var map = {
+    'Ą':'A','Ć':'C','Ę':'E','Ł':'L','Ń':'N','Ó':'O','Ś':'S','Ź':'Z','Ż':'Z',
+    'ą':'a','ć':'c','ę':'e','ł':'l','ń':'n','ó':'o','ś':'s','ź':'z','ż':'z'
+  };
+  return String(text).split('').map(function(c){
+    return map[c] !== undefined ? map[c] : c;
+  }).join('');
+}
+
+function delay(ms) {
+  return new Promise(function(resolve) { setTimeout(resolve, ms); });
+}
+
+// Generuje PDF dla pojedynczego zamowienia i wywoluje pdf.save()
+// Zwraca Promise z { ok: bool, codesCount: int, order: string, error: string }
+function generatePdfForRecord(recordId) {
+  var apiUrl = CONFIG.BASE_URL + '/' + recordId + '?api&v=3&APIKey=' + encodeURIComponent(CONFIG.API_KEY) + '&naming=fname';
+
+  return jsonp(apiUrl).then(function(data) {
+    // Rozpakowanie wrappera
+    var topKeys = Object.keys(data);
+    if (topKeys.length === 1 && /^\d+$/.test(topKeys[0]) && typeof data[topKeys[0]] === 'object') {
+      data = data[topKeys[0]];
+    }
+
+    var order = getField(data, ['NUMER ZAMOWIENIA', 'NUMER_ZAMOWIENIA']) || recordId;
+    var codes = [];
+
+    // Strategia 1: pole formuly CSV
+    var csvValue = getField(data, ['KODY_KARTONOW_CSV', 'KODY KARTONOW CSV']);
+    if (csvValue && typeof csvValue === 'string' && csvValue.trim()) {
+      codes = csvValue.split(/[,;]/).map(function(c){return c.trim();}).filter(function(c){return c.length > 0;});
+    }
+
+    // Strategia 2: subtable
+    if (codes.length === 0) {
+      for (var k in data) {
+        if (k.indexOf('_subtable') === 0 && typeof data[k] === 'object') {
+          for (var rk in data[k]) {
+            var r = data[k][rk];
+            if (r && typeof r === 'object') {
+              var val = r[CONFIG.SUBTABLE_BARCODE_FIELD_NAME] || r['NUMER_KARTONU'];
+              if (val) codes.push(String(val).trim());
+            }
+          }
+        }
+      }
+    }
+
+    if (codes.length === 0) {
+      return { ok: false, codesCount: 0, order: order, error: 'Brak kodow kartonow (puste KODY_KARTONOW_CSV)' };
+    }
+
+    // Pobranie pol produktu + konwersja polskich znakow
+    var productName = pl2ascii(getField(data, ['NAZWA PRODUKTU', 'NAZWA_PRODUKTU']));
+    var sku = pl2ascii(getField(data, ['SKU']));
+    var piecesPerBox = pl2ascii(getField(data, ['SZT W KARTON', 'SZT_W_KARTON']));
+    var orderAscii = pl2ascii(order);
+
+    // Generowanie PDF - identyczna logika jak w wersji single
+    var jsPDF = window.jspdf.jsPDF;
+    var pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    var pageWidth = pdf.internal.pageSize.getWidth();
+
+    function wrapText(text, maxWidth) {
+      var words = String(text).split(/\s+/).filter(Boolean);
+      var lines = [];
+      var current = '';
+      for (var i = 0; i < words.length; i++) {
+        var test = current ? current + ' ' + words[i] : words[i];
+        if (pdf.getTextWidth(test) <= maxWidth) {
+          current = test;
+        } else {
+          if (current) lines.push(current);
+          current = words[i];
+        }
+      }
+      if (current) lines.push(current);
+      return lines;
+    }
+
+    function fitProductName(text, maxWidth) {
+      var sizes = [10, 9, 8, 7];
+      for (var i = 0; i < sizes.length; i++) {
+        pdf.setFont(undefined, 'normal');
+        pdf.setFontSize(sizes[i]);
+        var lines = wrapText(text, maxWidth);
+        if (lines.length <= 5) return { size: sizes[i], lines: lines };
+      }
+      pdf.setFont(undefined, 'normal');
+      pdf.setFontSize(6);
+      return { size: 6, lines: wrapText(text, maxWidth) };
+    }
+
+    codes.forEach(function(code, i) {
+      if (i > 0) pdf.addPage();
+
+      if (sku) {
+        pdf.setFontSize(16); pdf.setFont(undefined, 'bold');
+        pdf.text('SKU: ' + sku, pageWidth / 2, 30, { align: 'center' });
+      }
+      if (productName) {
+        var fitted = fitProductName(productName, pageWidth - 40);
+        pdf.setFont(undefined, 'normal');
+        pdf.setFontSize(fitted.size);
+        pdf.text(fitted.lines, pageWidth / 2, 45, { align: 'center' });
+      }
+      pdf.setFontSize(24); pdf.setFont(undefined, 'bold');
+      pdf.text('Karton ' + (i + 1) + ' z ' + codes.length, pageWidth / 2, 90, { align: 'center' });
+
+      var canvas = document.createElement('canvas');
+      JsBarcode(canvas, code, {
+        format: CONFIG.BARCODE_FORMAT,
+        width: 3, height: 120,
+        displayValue: true, fontSize: 22, margin: 10
+      });
+      pdf.addImage(canvas.toDataURL('image/png'), 'PNG', (pageWidth - 160) / 2, 105, 160, 60);
+
+      if (piecesPerBox) {
+        pdf.setFontSize(20); pdf.setFont(undefined, 'bold');
+        pdf.text('Sztuk w kartonie: ' + piecesPerBox, pageWidth / 2, 200, { align: 'center' });
+      }
+      pdf.setFontSize(12); pdf.setFont(undefined, 'normal');
+      pdf.text('Zamowienie: ' + orderAscii, pageWidth / 2, 230, { align: 'center' });
+    });
+
+    var fileName = 'etykiety_' + String(orderAscii).replace(/[\/\\:*?"<>|]/g, '_') + '.pdf';
+    pdf.save(fileName);
+
+    return { ok: true, codesCount: codes.length, order: order, error: null };
+  }).catch(function(err) {
+    return { ok: false, codesCount: 0, order: recordId, error: err.message || String(err) };
+  });
+}
+
+function run() {
+  var params = new URLSearchParams(window.location.search);
+  var recordIdsParam = params.get('recordIds') || params.get('recordId') || '';
+  var recordIds = recordIdsParam.split(/[,;]/).map(function(s){return s.trim();}).filter(Boolean);
+
+  if (recordIds.length === 0) {
+    setStatus('Brak parametru recordIds w URL');
+    document.getElementById('spinner').style.display = 'none';
+    document.getElementById('backLink').style.display = 'inline-block';
+    return;
+  }
+
+  setStatus('Przetwarzam ' + recordIds.length + ' zamowien...');
+
+  var results = [];
+  var rows = [];
+
+  // Wstepne wpisy w logu - po jednym dla kazdego rekordu
+  recordIds.forEach(function(rid) {
+    rows.push(logRow('Rekord ' + rid + ' - oczekuje...', 'pending'));
+  });
+
+  // Sekwencyjne przetwarzanie - jeden po drugim, z opoznieniem miedzy pobraniami
+  function processNext(idx) {
+    if (idx >= recordIds.length) {
+      // Koniec - podsumowanie
+      var ok = results.filter(function(r){return r.ok;}).length;
+      var failed = results.filter(function(r){return !r.ok;});
+
+      setStatus('Zakonczono.');
+      document.getElementById('spinner').style.display = 'none';
+
+      var summary = document.getElementById('summary');
+      if (failed.length === 0) {
+        summary.className = 'summary ok';
+        summary.textContent = 'Wszystkie ' + ok + ' PDF pobrane pomyslnie.';
+      } else {
+        summary.className = 'summary warn';
+        summary.textContent = 'Pobrano ' + ok + ' z ' + recordIds.length + '. Bledy: ' + failed.length;
+      }
+      document.getElementById('backLink').style.display = 'inline-block';
+      return;
+    }
+
+    var rid = recordIds[idx];
+    rows[idx].textContent = 'Rekord ' + rid + ' - pobieram dane...';
+    rows[idx].className = 'log-row log-pending';
+    setProgress(idx, recordIds.length);
+
+    generatePdfForRecord(rid).then(function(result) {
+      results.push(result);
+      if (result.ok) {
+        rows[idx].textContent = '✓ ' + result.order + ' - ' + result.codesCount + ' etykiet pobrane';
+        rows[idx].className = 'log-row log-ok';
+      } else {
+        rows[idx].textContent = '✗ ' + result.order + ' - ' + result.error;
+        rows[idx].className = 'log-row log-err';
+      }
+      setProgress(idx + 1, recordIds.length);
+
+      // Opoznienie zeby pobranie pliku zdazylo sie obsluzyc
+      delay(CONFIG.DOWNLOAD_DELAY_MS).then(function() {
+        processNext(idx + 1);
+      });
+    });
+  }
+
+  processNext(0);
+}
+
+if (document.readyState === 'complete') {
+  run();
+} else {
+  window.addEventListener('load', run);
+}
+</script>
+
+</body>
+</html>
