@@ -5,7 +5,7 @@
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>Etykiety produktowe [v1]</title>
+<title>Etykiety produktowe [v2]</title>
 <style>
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -14,7 +14,6 @@
     background: #fafafa;
   }
 
-  /* Status overlay - widoczny w trakcie ładowania, ukryty na druku */
   #status-overlay {
     position: fixed;
     top: 0; left: 0; right: 0; bottom: 0;
@@ -42,16 +41,27 @@
     animation: spin 0.8s linear infinite;
     margin: 0 auto 16px;
   }
-
   @keyframes spin { to { transform: rotate(360deg); } }
 
   #status { font-size: 14px; line-height: 1.5; color: #444; }
   .err { color: #c33; }
 
+  .summary {
+    background: #f0f7ff;
+    border: 1px solid #cce0f5;
+    border-radius: 6px;
+    padding: 16px;
+    margin: 16px 0;
+    font-size: 13px;
+    line-height: 1.6;
+    text-align: left;
+  }
+  .summary strong { color: #2c5282; }
+
   .btns { margin-top: 20px; }
   button {
     margin: 4px;
-    padding: 10px 22px;
+    padding: 12px 24px;
     background: #2c5282;
     color: white;
     border: none;
@@ -60,9 +70,25 @@
     font-size: 14px;
     font-weight: 500;
   }
-  button:hover { background: #1e4072; }
+  button:hover:not(:disabled) { background: #1e4072; }
   button.secondary { background: #888; }
-  button.secondary:hover { background: #666; }
+  button.secondary:hover:not(:disabled) { background: #666; }
+
+  .choice {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin: 16px 0;
+  }
+  .choice button {
+    flex: 1;
+    min-width: 200px;
+    padding: 18px 24px;
+    font-size: 15px;
+  }
+  .choice button.pdf-btn { background: #2f855a; }
+  .choice button.pdf-btn:hover { background: #276749; }
 
   pre {
     background: #f0f0f0; padding: 8px; border-radius: 4px;
@@ -70,9 +96,9 @@
     max-height: 300px; margin-top: 12px;
   }
 
-  /* Kontener z iframe'ami etykiet */
   #labels {
     padding: 20px 0;
+    display: none;
   }
 
   .label-frame {
@@ -85,16 +111,12 @@
     page-break-after: always;
   }
 
-  /* Style do druku */
-  @page {
-    size: A4 portrait;
-    margin: 0;
-  }
+  @page { size: A4 portrait; margin: 0; }
 
   @media print {
     body { background: white; margin: 0; padding: 0; }
     #status-overlay { display: none !important; }
-    #labels { padding: 0; }
+    #labels { padding: 0; display: block !important; }
     .label-frame {
       width: 100%;
       height: 100vh;
@@ -103,9 +125,7 @@
       page-break-after: always;
       page-break-inside: avoid;
     }
-    .label-frame:last-child {
-      page-break-after: auto;
-    }
+    .label-frame:last-child { page-break-after: auto; }
   }
 </style>
 </head>
@@ -115,8 +135,12 @@
   <div class="status-box">
     <div class="spinner" id="spinner"></div>
     <div id="status">Inicjalizacja...</div>
+    <div id="summary-box" class="summary" style="display:none"></div>
     <div class="btns">
-      <button id="printBtn" style="display:none" onclick="doPrint()">🖨 Drukuj / Zapisz jako PDF</button>
+      <div id="choice-buttons" class="choice" style="display:none">
+        <button onclick="handleChoice('print')">🖨 Drukuj</button>
+        <button class="pdf-btn" onclick="handleChoice('pdf')">📄 Pobierz jako PDF</button>
+      </div>
       <button id="backBtn" class="secondary" style="display:none" onclick="returnToRagic()">Wróć do Ragic</button>
     </div>
     <pre id="debug" style="display:none"></pre>
@@ -131,21 +155,23 @@ var CONFIG = {
   BASE_URL: 'https://eu3.ragic.com/AMAZINGGIRL/szwalnia-mg/80',
   API_KEY: 'QUtiQ0QyMGt2cDB0SVI1TlRBOHQrWmJPMTNCY3hJaG5RUnBQU09FdEJRSXVVeU5MdHRvT2Y3ejV1KyttWTZFWGUraTB2NGJ1bm5wVkFOcDV5WURWY0E9PQ==',
 
-  // Pola w wierszach subtabel - próbujemy obu konwencji nazewniczych
   URL_FIELD_NAMES: ['ETYKIETA PRODUKTOWA', 'ETYKIETA_PRODUKTOWA'],
   QTY_FIELD_NAMES: [
     'ILOŚCI DO PRODUKCJI', 'ILOSCI DO PRODUKCJI',
     'ILOŚCI_DO_PRODUKCJI', 'ILOSCI_DO_PRODUKCJI'
   ],
 
-  // Auto-print po załadowaniu (false = czeka na klik użytkownika)
-  AUTO_PRINT: true,
-  AUTO_PRINT_DELAY_MS: 800,
-
-  // Maksymalna sensowna liczba etykiet (ostrzeżenie powyżej)
-  MAX_LABELS_WARN: 300
+  MAX_LABELS_WARN: 300,
+  POST_LOAD_DELAY_MS: 500
 };
 // =======================================
+
+var state = {
+  recordId: null,
+  items: [],
+  totalLabels: 0,
+  uniqueUrls: 0
+};
 
 function setStatus(html, isErr) {
   var el = document.getElementById('status');
@@ -168,10 +194,6 @@ function returnToRagic() {
   setTimeout(function() {
     if (window.history.length > 1) window.history.back();
   }, 80);
-}
-
-function doPrint() {
-  window.print();
 }
 
 function jsonp(url) {
@@ -212,7 +234,9 @@ function getField(obj, names) {
   return '';
 }
 
-function generate() {
+// ============ FAZA 1: pobranie danych i pokazanie wyboru ============
+
+function loadDataAndShowChoice() {
   var params = new URLSearchParams(window.location.search);
   var recordId = params.get('recordId');
   var debugMode = params.get('debug') === '1';
@@ -221,6 +245,7 @@ function generate() {
     setStatus('Brak parametru recordId w URL.', true);
     return;
   }
+  state.recordId = recordId;
 
   setStatus('Pobieram dane z Ragic...');
 
@@ -229,22 +254,18 @@ function generate() {
                '&naming=fname';
 
   jsonp(apiUrl).then(function(data) {
-    // Odpakowanie zewnętrznej obwoluty {nodeId: {...rekord...}}
     var topKeys = Object.keys(data);
     if (topKeys.length === 1 && /^\d+$/.test(topKeys[0]) && typeof data[topKeys[0]] === 'object') {
       data = data[topKeys[0]];
     }
 
-    // Tryb debug - dodaj &debug=1 do URL
     if (debugMode) {
       setStatus('Tryb debug - struktura danych z API:');
       showDebug(data);
       return;
     }
 
-    // Zbierz wszystkie pary (url, qty) z OBYDWU subtabel naraz
     var items = [];
-
     for (var key in data) {
       if (key.indexOf('_subtable') === 0 && typeof data[key] === 'object') {
         for (var rowKey in data[key]) {
@@ -274,88 +295,13 @@ function generate() {
       return;
     }
 
-    var totalLabels = items.reduce(function(s, i){ return s + i.qty; }, 0);
-    var uniqueUrls = {};
-    items.forEach(function(i){ uniqueUrls[i.url] = true; });
-    var uniqueCount = Object.keys(uniqueUrls).length;
+    state.items = items;
+    state.totalLabels = items.reduce(function(s, i){ return s + i.qty; }, 0);
+    var uniqueMap = {};
+    items.forEach(function(i){ uniqueMap[i.url] = true; });
+    state.uniqueUrls = Object.keys(uniqueMap).length;
 
-    console.log('[Etykiety] Zebrane pozycje:', items);
-    console.log('[Etykiety] Łącznie etykiet:', totalLabels, '(' + uniqueCount + ' unikalnych URL-i)');
-
-    if (totalLabels > CONFIG.MAX_LABELS_WARN) {
-      console.warn('Dużo etykiet (' + totalLabels + ') - ładowanie może chwilę potrwać.');
-    }
-
-    var container = document.getElementById('labels');
-    container.innerHTML = '';
-
-    var loadedCount = 0;
-    var failedCount = 0;
-    var updateInterval = null;
-
-    function updateProgress() {
-      var done = loadedCount + failedCount;
-      var msg = 'Ładuję etykiety... <strong>' + done + ' / ' + totalLabels + '</strong>';
-      if (failedCount > 0) msg += ' <span class="err">(' + failedCount + ' błędów)</span>';
-      var el = document.getElementById('status');
-      el.innerHTML = msg;
-    }
-
-    function onAllLoaded() {
-      clearInterval(updateInterval);
-      document.getElementById('spinner').style.display = 'none';
-
-      var msg;
-      if (failedCount === totalLabels) {
-        setStatus('Nie udało się załadować żadnej etykiety. Sprawdź czy URL-e w polach ETYKIETA PRODUKTOWA są poprawne.', true);
-        return;
-      } else if (failedCount > 0) {
-        msg = 'Załadowano <strong>' + loadedCount + ' / ' + totalLabels + '</strong> etykiet ' +
-              '(<span class="err">' + failedCount + ' nie wczytało się</span>).<br>' +
-              'Otwórz dialog druku, aby wydrukować lub zapisać jako PDF.';
-      } else {
-        msg = 'Gotowe! Załadowano <strong>' + totalLabels + '</strong> etykiet.<br>' +
-              'Otwieram dialog druku...<br>' +
-              '<small style="color:#888">W oknie druku wybierz drukarkę lub <em>Zapisz jako PDF</em>.</small>';
-      }
-      setStatus(msg);
-      document.getElementById('printBtn').style.display = 'inline-block';
-      document.getElementById('backBtn').style.display = 'inline-block';
-
-      if (CONFIG.AUTO_PRINT) {
-        setTimeout(doPrint, CONFIG.AUTO_PRINT_DELAY_MS);
-      }
-    }
-
-    // Aktualizacja co 200ms żeby liczniki ładnie tikały
-    updateInterval = setInterval(updateProgress, 200);
-
-    function checkDone() {
-      if (loadedCount + failedCount === totalLabels) {
-        // Dajemy 400ms na dokończenie renderowania ostatnich iframe'ów
-        setTimeout(onAllLoaded, 400);
-      }
-    }
-
-    // Tworzymy iframe dla każdej kopii etykiety
-    // (jeśli ten sam URL pojawia się N razy, browser cache'uje go automatycznie po pierwszym hicie)
-    items.forEach(function(item) {
-      for (var i = 0; i < item.qty; i++) {
-        var iframe = document.createElement('iframe');
-        iframe.className = 'label-frame';
-        iframe.src = item.url;
-        iframe.loading = 'eager';
-        iframe.onload = function() {
-          loadedCount++;
-          checkDone();
-        };
-        iframe.onerror = function() {
-          failedCount++;
-          checkDone();
-        };
-        container.appendChild(iframe);
-      }
-    });
+    showChoiceUI();
 
   }).catch(function(err) {
     setStatus('Błąd: ' + err.message, true);
@@ -363,10 +309,124 @@ function generate() {
   });
 }
 
+function showChoiceUI() {
+  document.getElementById('spinner').style.display = 'none';
+
+  var warn = '';
+  if (state.totalLabels > CONFIG.MAX_LABELS_WARN) {
+    warn = '<br><strong style="color:#c33">⚠️ Duża liczba etykiet</strong> – ładowanie może chwilę potrwać.';
+  }
+
+  document.getElementById('status').innerHTML = '<strong style="font-size:16px">Co chcesz zrobić z etykietami?</strong>';
+
+  var summary = document.getElementById('summary-box');
+  summary.innerHTML =
+    'Rekord: <strong>#' + state.recordId + '</strong><br>' +
+    'Liczba etykiet do wygenerowania: <strong>' + state.totalLabels + '</strong><br>' +
+    'Unikalnych szablonów: <strong>' + state.uniqueUrls + '</strong>' +
+    warn;
+  summary.style.display = 'block';
+
+  document.getElementById('choice-buttons').style.display = 'flex';
+  document.getElementById('backBtn').style.display = 'inline-block';
+}
+
+// ============ FAZA 2: ładowanie etykiet i akcja ============
+
+function handleChoice(mode) {
+  document.getElementById('choice-buttons').style.display = 'none';
+  document.getElementById('backBtn').style.display = 'none';
+  document.getElementById('summary-box').style.display = 'none';
+  document.getElementById('spinner').style.display = 'block';
+
+  loadAllFrames(mode);
+}
+
+function loadAllFrames(mode) {
+  var container = document.getElementById('labels');
+  container.innerHTML = '';
+  container.style.display = 'block';
+
+  var totalLabels = state.totalLabels;
+  var loadedCount = 0;
+  var failedCount = 0;
+  var updateInterval = null;
+
+  function updateProgress() {
+    var done = loadedCount + failedCount;
+    var msg = 'Ładuję etykiety... <strong>' + done + ' / ' + totalLabels + '</strong>';
+    if (failedCount > 0) msg += ' <span class="err">(' + failedCount + ' błędów)</span>';
+    document.getElementById('status').innerHTML = msg;
+  }
+
+  function onAllLoaded() {
+    clearInterval(updateInterval);
+
+    if (failedCount === totalLabels) {
+      setStatus('Nie udało się załadować żadnej etykiety. Sprawdź czy URL-e w polach ETYKIETA PRODUKTOWA są poprawne.', true);
+      return;
+    }
+
+    var failMsg = failedCount > 0
+      ? ' (<span class="err">' + failedCount + ' nie wczytało się</span>)'
+      : '';
+
+    document.getElementById('spinner').style.display = 'none';
+
+    if (mode === 'print') {
+      setStatus(
+        'Załadowano <strong>' + loadedCount + ' / ' + totalLabels + '</strong> etykiet' + failMsg + '.<br>' +
+        'Otwieram dialog druku...<br>' +
+        '<small style="color:#888">W oknie druku wybierz drukarkę.</small>'
+      );
+      document.getElementById('backBtn').style.display = 'inline-block';
+      setTimeout(function() { window.print(); }, CONFIG.POST_LOAD_DELAY_MS);
+    } else if (mode === 'pdf') {
+      setStatus(
+        'Załadowano <strong>' + loadedCount + ' / ' + totalLabels + '</strong> etykiet' + failMsg + '.<br><br>' +
+        '<strong>Aby zapisać jako PDF:</strong> w oknie druku wybierz <strong>„Zapisz jako PDF"</strong> ' +
+        'jako drukarkę docelową.<br>' +
+        '<small style="color:#888">Chrome/Edge: drukarka „Zapisz jako PDF". ' +
+        'Firefox: „Microsoft Print to PDF" (Windows) lub „Save as PDF" (Mac).</small>'
+      );
+      document.getElementById('backBtn').style.display = 'inline-block';
+      setTimeout(function() { window.print(); }, CONFIG.POST_LOAD_DELAY_MS + 1500);
+    }
+  }
+
+  function checkDone() {
+    if (loadedCount + failedCount === totalLabels) {
+      setTimeout(onAllLoaded, 400);
+    }
+  }
+
+  updateInterval = setInterval(updateProgress, 200);
+
+  state.items.forEach(function(item) {
+    for (var i = 0; i < item.qty; i++) {
+      var iframe = document.createElement('iframe');
+      iframe.className = 'label-frame';
+      iframe.src = item.url;
+      iframe.loading = 'eager';
+      iframe.onload = function() {
+        loadedCount++;
+        checkDone();
+      };
+      iframe.onerror = function() {
+        failedCount++;
+        checkDone();
+      };
+      container.appendChild(iframe);
+    }
+  });
+}
+
+// ============ START ============
+
 if (document.readyState === 'complete') {
-  generate();
+  loadDataAndShowChoice();
 } else {
-  window.addEventListener('load', generate);
+  window.addEventListener('load', loadDataAndShowChoice);
 }
 </script>
 
