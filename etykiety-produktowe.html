@@ -5,7 +5,9 @@
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>Etykiety produktowe [v2]</title>
+<title>Etykiety produktowe [v3]</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
 <style>
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -90,12 +92,27 @@
   .choice button.pdf-btn { background: #2f855a; }
   .choice button.pdf-btn:hover { background: #276749; }
 
+  .progress-bar {
+    background: #e0e0e0;
+    height: 6px;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-top: 12px;
+  }
+  .progress-bar-fill {
+    background: #2c5282;
+    height: 100%;
+    width: 0%;
+    transition: width 0.3s;
+  }
+
   pre {
     background: #f0f0f0; padding: 8px; border-radius: 4px;
     font-size: 11px; text-align: left; overflow: auto;
     max-height: 300px; margin-top: 12px;
   }
 
+  /* Kontener z iframe'ami do trybu DRUKUJ */
   #labels {
     padding: 20px 0;
     display: none;
@@ -135,6 +152,9 @@
   <div class="status-box">
     <div class="spinner" id="spinner"></div>
     <div id="status">Inicjalizacja...</div>
+    <div id="progress-bar" class="progress-bar" style="display:none">
+      <div id="progress-bar-fill" class="progress-bar-fill"></div>
+    </div>
     <div id="summary-box" class="summary" style="display:none"></div>
     <div class="btns">
       <div id="choice-buttons" class="choice" style="display:none">
@@ -162,7 +182,12 @@ var CONFIG = {
   ],
 
   MAX_LABELS_WARN: 300,
-  POST_LOAD_DELAY_MS: 500
+  POST_LOAD_DELAY_MS: 500,
+
+  // Ustawienia renderowania PDF
+  PDF_RENDER_SCALE: 2,       // 1.5-2 = dobry kompromis jakości/rozmiaru
+  PDF_JPEG_QUALITY: 0.85,    // 0.7-0.9
+  RAGIC_ORIGIN: 'https://eu3.ragic.com'
 };
 // =======================================
 
@@ -179,8 +204,20 @@ function setStatus(html, isErr) {
   el.className = isErr ? 'err' : '';
   if (isErr) {
     document.getElementById('spinner').style.display = 'none';
+    document.getElementById('progress-bar').style.display = 'none';
     document.getElementById('backBtn').style.display = 'inline-block';
   }
+}
+
+function setProgress(percent) {
+  var bar = document.getElementById('progress-bar');
+  var fill = document.getElementById('progress-bar-fill');
+  bar.style.display = 'block';
+  fill.style.width = Math.max(0, Math.min(100, percent)) + '%';
+}
+
+function hideProgress() {
+  document.getElementById('progress-bar').style.display = 'none';
 }
 
 function showDebug(obj) {
@@ -219,7 +256,7 @@ function jsonp(url) {
     var sep = url.indexOf('?') === -1 ? '?' : '&';
     script.src = url + sep + 'callback=' + callbackName;
     script.onerror = function() {
-      reject(new Error('Nie udało się połączyć z Ragic API. Sprawdź klucz API i URL.'));
+      reject(new Error('Nie udało się połączyć z Ragic API.'));
       cleanup();
     };
     document.head.appendChild(script);
@@ -232,6 +269,10 @@ function getField(obj, names) {
     if (v !== undefined && v !== null && v !== '') return v;
   }
   return '';
+}
+
+function sleep(ms) {
+  return new Promise(function(r) { setTimeout(r, ms); });
 }
 
 // ============ FAZA 1: pobranie danych i pokazanie wyboru ============
@@ -314,7 +355,7 @@ function showChoiceUI() {
 
   var warn = '';
   if (state.totalLabels > CONFIG.MAX_LABELS_WARN) {
-    warn = '<br><strong style="color:#c33">⚠️ Duża liczba etykiet</strong> – ładowanie może chwilę potrwać.';
+    warn = '<br><strong style="color:#c33">⚠️ Duża liczba etykiet</strong> – przetwarzanie może chwilę potrwać.';
   }
 
   document.getElementById('status').innerHTML = '<strong style="font-size:16px">Co chcesz zrobić z etykietami?</strong>';
@@ -339,10 +380,16 @@ function handleChoice(mode) {
   document.getElementById('summary-box').style.display = 'none';
   document.getElementById('spinner').style.display = 'block';
 
-  loadAllFrames(mode);
+  if (mode === 'print') {
+    runPrintMode();
+  } else if (mode === 'pdf') {
+    runPdfMode();
+  }
 }
 
-function loadAllFrames(mode) {
+// ============ TRYB DRUKUJ (iframe + window.print) ============
+
+function runPrintMode() {
   var container = document.getElementById('labels');
   container.innerHTML = '';
   container.style.display = 'block';
@@ -357,13 +404,15 @@ function loadAllFrames(mode) {
     var msg = 'Ładuję etykiety... <strong>' + done + ' / ' + totalLabels + '</strong>';
     if (failedCount > 0) msg += ' <span class="err">(' + failedCount + ' błędów)</span>';
     document.getElementById('status').innerHTML = msg;
+    setProgress((done / totalLabels) * 100);
   }
 
   function onAllLoaded() {
     clearInterval(updateInterval);
+    hideProgress();
 
     if (failedCount === totalLabels) {
-      setStatus('Nie udało się załadować żadnej etykiety. Sprawdź czy URL-e w polach ETYKIETA PRODUKTOWA są poprawne.', true);
+      setStatus('Nie udało się załadować żadnej etykiety.', true);
       return;
     }
 
@@ -372,26 +421,12 @@ function loadAllFrames(mode) {
       : '';
 
     document.getElementById('spinner').style.display = 'none';
-
-    if (mode === 'print') {
-      setStatus(
-        'Załadowano <strong>' + loadedCount + ' / ' + totalLabels + '</strong> etykiet' + failMsg + '.<br>' +
-        'Otwieram dialog druku...<br>' +
-        '<small style="color:#888">W oknie druku wybierz drukarkę.</small>'
-      );
-      document.getElementById('backBtn').style.display = 'inline-block';
-      setTimeout(function() { window.print(); }, CONFIG.POST_LOAD_DELAY_MS);
-    } else if (mode === 'pdf') {
-      setStatus(
-        'Załadowano <strong>' + loadedCount + ' / ' + totalLabels + '</strong> etykiet' + failMsg + '.<br><br>' +
-        '<strong>Aby zapisać jako PDF:</strong> w oknie druku wybierz <strong>„Zapisz jako PDF"</strong> ' +
-        'jako drukarkę docelową.<br>' +
-        '<small style="color:#888">Chrome/Edge: drukarka „Zapisz jako PDF". ' +
-        'Firefox: „Microsoft Print to PDF" (Windows) lub „Save as PDF" (Mac).</small>'
-      );
-      document.getElementById('backBtn').style.display = 'inline-block';
-      setTimeout(function() { window.print(); }, CONFIG.POST_LOAD_DELAY_MS + 1500);
-    }
+    setStatus(
+      'Załadowano <strong>' + loadedCount + ' / ' + totalLabels + '</strong> etykiet' + failMsg + '.<br>' +
+      'Otwieram dialog druku...'
+    );
+    document.getElementById('backBtn').style.display = 'inline-block';
+    setTimeout(function() { window.print(); }, CONFIG.POST_LOAD_DELAY_MS);
   }
 
   function checkDone() {
@@ -408,17 +443,201 @@ function loadAllFrames(mode) {
       iframe.className = 'label-frame';
       iframe.src = item.url;
       iframe.loading = 'eager';
-      iframe.onload = function() {
-        loadedCount++;
-        checkDone();
-      };
-      iframe.onerror = function() {
-        failedCount++;
-        checkDone();
-      };
+      iframe.onload = function() { loadedCount++; checkDone(); };
+      iframe.onerror = function() { failedCount++; checkDone(); };
       container.appendChild(iframe);
     }
   });
+}
+
+// ============ TRYB POBIERZ PDF (html2canvas + jsPDF) ============
+
+async function runPdfMode() {
+  try {
+    // 1. Lista unikalnych URL-i (każdy szablon renderujemy tylko raz)
+    var uniqueUrls = [];
+    var seen = {};
+    state.items.forEach(function(item) {
+      if (!seen[item.url]) {
+        seen[item.url] = true;
+        uniqueUrls.push(item.url);
+      }
+    });
+
+    // 2. Renderuj każdy unikalny URL do canvasa
+    var canvases = {};
+    for (var i = 0; i < uniqueUrls.length; i++) {
+      var url = uniqueUrls[i];
+      setStatus('Renderuję szablon <strong>' + (i + 1) + ' / ' + uniqueUrls.length + '</strong>...');
+      setProgress((i / uniqueUrls.length) * 80); // 0-80% to renderowanie szablonów
+
+      try {
+        canvases[url] = await renderUrlToCanvas(url);
+      } catch (err) {
+        console.error('Błąd renderowania ' + url + ':', err);
+        canvases[url] = null;
+      }
+    }
+
+    var successCount = Object.keys(canvases).filter(function(u) { return canvases[u]; }).length;
+    if (successCount === 0) {
+      throw new Error('Nie udało się wyrenderować żadnego szablonu. Sprawdź konsolę (F12) dla szczegółów.');
+    }
+
+    // 3. Buduj PDF
+    setStatus('Buduję plik PDF...');
+    setProgress(85);
+    await sleep(50); // pozwól UI odświeżyć
+
+    var jsPDF = window.jspdf.jsPDF;
+    var pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    var firstPage = true;
+    var pageNum = 0;
+    var aliasMap = {};
+    var aliasCounter = 0;
+
+    for (var k = 0; k < state.items.length; k++) {
+      var it = state.items[k];
+      var canvas = canvases[it.url];
+      if (!canvas) continue;
+
+      // Przygotuj alias dla deduplikacji obrazu w PDF
+      if (!aliasMap[it.url]) {
+        aliasMap[it.url] = 'img_' + (aliasCounter++);
+      }
+      var alias = aliasMap[it.url];
+      var imgData = canvas.toDataURL('image/jpeg', CONFIG.PDF_JPEG_QUALITY);
+
+      for (var n = 0; n < it.qty; n++) {
+        if (!firstPage) pdf.addPage();
+        pdf.addImage(imgData, 'JPEG', 0, 0, 210, 297, alias, 'FAST');
+        firstPage = false;
+        pageNum++;
+
+        // Co 10 stron - update statusu i yield do UI
+        if (pageNum % 10 === 0) {
+          setStatus('Buduję plik PDF... <strong>' + pageNum + ' / ' + state.totalLabels + '</strong> stron');
+          setProgress(85 + (pageNum / state.totalLabels) * 13);
+          await sleep(10);
+        }
+      }
+    }
+
+    // 4. Pobierz plik
+    setStatus('Pobieram plik...');
+    setProgress(100);
+    await sleep(100);
+
+    var fileName = 'etykiety_' + state.recordId + '_' + new Date().toISOString().slice(0, 10) + '.pdf';
+    pdf.save(fileName);
+
+    // 5. Komunikat końcowy
+    document.getElementById('spinner').style.display = 'none';
+    hideProgress();
+    setStatus(
+      '<strong>✅ Gotowe!</strong><br>' +
+      'PDF został pobrany (' + pageNum + ' stron).<br>' +
+      '<small style="color:#888">Sprawdź folder Pobrane.</small>'
+    );
+    document.getElementById('backBtn').style.display = 'inline-block';
+
+  } catch (err) {
+    console.error(err);
+    setStatus(
+      'Błąd generowania PDF: ' + err.message + '<br><br>' +
+      '<small>Spróbuj użyć opcji <strong>Drukuj</strong> i wybrać „Zapisz jako PDF" w oknie druku.</small>',
+      true
+    );
+  }
+}
+
+// Renderuje pojedynczy URL Ragic etykiety do canvasa
+async function renderUrlToCanvas(url) {
+  // 1. Pobierz HTML strony etykiety
+  var html = await fetch(url, { credentials: 'omit' }).then(function(r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status + ' dla ' + url);
+    return r.text();
+  });
+
+  // 2. Wstrzyknij <base> żeby relatywne ścieżki (CSS, obrazy, fonty) działały
+  if (html.indexOf('<head>') !== -1) {
+    html = html.replace('<head>', '<head><base href="' + CONFIG.RAGIC_ORIGIN + '/">');
+  } else if (/<head\s/i.test(html)) {
+    html = html.replace(/(<head\s[^>]*>)/i, '$1<base href="' + CONFIG.RAGIC_ORIGIN + '/">');
+  } else {
+    // Brak <head> - dodaj na początku
+    html = '<head><base href="' + CONFIG.RAGIC_ORIGIN + '/"></head>' + html;
+  }
+
+  // 3. Wytnij <script> żeby uniknąć problemów z wykonywaniem JS Ragica
+  html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+  html = html.replace(/<script\b[^>]*\/>/gi, '');
+
+  // 4. Stwórz ukryty iframe z tym HTML (srcdoc = same-origin = dostęp do DOM)
+  var iframe = document.createElement('iframe');
+  iframe.style.position = 'absolute';
+  iframe.style.left = '-99999px';
+  iframe.style.top = '0';
+  iframe.style.width = '210mm';
+  iframe.style.height = '297mm';
+  iframe.style.border = 'none';
+  iframe.style.background = 'white';
+  iframe.srcdoc = html;
+  document.body.appendChild(iframe);
+
+  try {
+    // 5. Czekaj na załadowanie iframe
+    await new Promise(function(resolve, reject) {
+      var resolved = false;
+      iframe.onload = function() { if (!resolved) { resolved = true; resolve(); } };
+      iframe.onerror = function() { reject(new Error('iframe error')); };
+      setTimeout(function() { if (!resolved) { resolved = true; resolve(); } }, 15000);
+    });
+
+    // 6. Czekaj na zasoby (fonty, obrazy)
+    var doc = iframe.contentDocument;
+    if (!doc) throw new Error('Brak dostępu do contentDocument iframe (' + url + ')');
+
+    // Czekaj na fonty
+    if (doc.fonts && doc.fonts.ready) {
+      try { await doc.fonts.ready; } catch (e) {}
+    }
+
+    // Czekaj na obrazy
+    var images = Array.prototype.slice.call(doc.querySelectorAll('img'));
+    await Promise.all(images.map(function(img) {
+      if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+      return new Promise(function(resolve) {
+        var done = false;
+        var finish = function() { if (!done) { done = true; resolve(); } };
+        img.onload = finish;
+        img.onerror = finish;
+        setTimeout(finish, 8000);
+      });
+    }));
+
+    // Dodatkowy bufor czasu na renderowanie
+    await sleep(800);
+
+    // 7. Renderuj do canvasa
+    var target = doc.body;
+    var canvas = await html2canvas(target, {
+      scale: CONFIG.PDF_RENDER_SCALE,
+      useCORS: true,
+      allowTaint: true,
+      logging: false,
+      backgroundColor: '#ffffff',
+      width: target.scrollWidth || target.offsetWidth || 794,
+      height: target.scrollHeight || target.offsetHeight || 1123,
+      windowWidth: 794,
+      windowHeight: 1123
+    });
+
+    return canvas;
+  } finally {
+    // 8. Sprzątanie - usuń iframe nawet jeśli był błąd
+    if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+  }
 }
 
 // ============ START ============
