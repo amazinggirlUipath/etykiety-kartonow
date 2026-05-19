@@ -5,9 +5,7 @@
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>Etykiety produktowe [v4]</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
+<title>Etykiety produktowe [v5]</title>
 <style>
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -29,7 +27,7 @@
 
   .status-box {
     text-align: center;
-    max-width: 600px;
+    max-width: 620px;
     background: white;
     padding: 32px;
     border-radius: 8px;
@@ -60,6 +58,18 @@
   }
   .summary strong { color: #2c5282; }
 
+  .info-box {
+    background: #fffbeb;
+    border: 1px solid #fbd38d;
+    border-radius: 6px;
+    padding: 14px;
+    margin: 16px 0;
+    font-size: 13px;
+    line-height: 1.5;
+    text-align: left;
+  }
+  .info-box strong { color: #b7791f; }
+
   .btns { margin-top: 20px; }
   button {
     margin: 4px;
@@ -73,24 +83,11 @@
     font-weight: 500;
   }
   button:hover:not(:disabled) { background: #1e4072; }
+  button.big { padding: 18px 28px; font-size: 16px; min-width: 250px; }
   button.secondary { background: #888; }
   button.secondary:hover:not(:disabled) { background: #666; }
-
-  .choice {
-    display: flex;
-    gap: 12px;
-    justify-content: center;
-    flex-wrap: wrap;
-    margin: 16px 0;
-  }
-  .choice button {
-    flex: 1;
-    min-width: 200px;
-    padding: 18px 24px;
-    font-size: 15px;
-  }
-  .choice button.pdf-btn { background: #2f855a; }
-  .choice button.pdf-btn:hover { background: #276749; }
+  button.pdf-btn { background: #2f855a; }
+  button.pdf-btn:hover:not(:disabled) { background: #276749; }
 
   .progress-bar {
     background: #e0e0e0;
@@ -155,11 +152,9 @@
       <div id="progress-bar-fill" class="progress-bar-fill"></div>
     </div>
     <div id="summary-box" class="summary" style="display:none"></div>
+    <div id="info-box" class="info-box" style="display:none"></div>
     <div class="btns">
-      <div id="choice-buttons" class="choice" style="display:none">
-        <button onclick="handleChoice('print')">🖨 Drukuj</button>
-        <button class="pdf-btn" onclick="handleChoice('pdf')">📄 Pobierz jako PDF</button>
-      </div>
+      <button id="actionBtn" class="big pdf-btn" style="display:none" onclick="startLoading()">📄 Wygeneruj etykiety</button>
       <button id="backBtn" class="secondary" style="display:none" onclick="returnToRagic()">Wróć do Ragic</button>
     </div>
     <pre id="debug" style="display:none"></pre>
@@ -174,10 +169,6 @@ var CONFIG = {
   BASE_URL: 'https://eu3.ragic.com/AMAZINGGIRL/szwalnia-mg/80',
   API_KEY: 'QUtiQ0QyMGt2cDB0SVI1TlRBOHQrWmJPMTNCY3hJaG5RUnBQU09FdEJRSXVVeU5MdHRvT2Y3ejV1KyttWTZFWGUraTB2NGJ1bm5wVkFOcDV5WURWY0E9PQ==',
 
-  // !!! UZUPEŁNIJ TUTAJ URL TWOJEGO CLOUDFLARE WORKERA !!!
-  // Format: https://NAZWA.TWOJE-KONTO.workers.dev (bez trailing slash, bez /?url=)
-  PROXY_URL: 'https://ragic-proxy.sprzedaz-40c.workers.dev',
-
   URL_FIELD_NAMES: ['ETYKIETA PRODUKTOWA', 'ETYKIETA_PRODUKTOWA'],
   QTY_FIELD_NAMES: [
     'ILOŚCI DO PRODUKCJI', 'ILOSCI DO PRODUKCJI',
@@ -185,11 +176,7 @@ var CONFIG = {
   ],
 
   MAX_LABELS_WARN: 300,
-  POST_LOAD_DELAY_MS: 500,
-
-  PDF_RENDER_SCALE: 2,
-  PDF_JPEG_QUALITY: 0.85,
-  RAGIC_ORIGIN: 'https://eu3.ragic.com'
+  POST_LOAD_DELAY_MS: 800
 };
 // =======================================
 
@@ -235,14 +222,6 @@ function returnToRagic() {
   }, 80);
 }
 
-// Buduje URL przez proxy (zamienia https://eu3.ragic.com/x -> https://worker/?url=https%3A...)
-function viaProxy(url) {
-  if (!CONFIG.PROXY_URL || CONFIG.PROXY_URL.indexOf('TWOJE-KONTO') !== -1) {
-    throw new Error('PROXY_URL nie został skonfigurowany w CONFIG. Wpisz URL swojego Cloudflare Workera.');
-  }
-  return CONFIG.PROXY_URL.replace(/\/$/, '') + '/?url=' + encodeURIComponent(url);
-}
-
 function jsonp(url) {
   return new Promise(function(resolve, reject) {
     var callbackName = 'ragicCb_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
@@ -281,13 +260,9 @@ function getField(obj, names) {
   return '';
 }
 
-function sleep(ms) {
-  return new Promise(function(r) { setTimeout(r, ms); });
-}
+// ============ FAZA 1: pobranie danych i pokazanie przycisku ============
 
-// ============ FAZA 1: pobranie danych i pokazanie wyboru ============
-
-function loadDataAndShowChoice() {
+function loadDataAndShowButton() {
   var params = new URLSearchParams(window.location.search);
   var recordId = params.get('recordId');
   var debugMode = params.get('debug') === '1';
@@ -339,8 +314,7 @@ function loadDataAndShowChoice() {
         'Brak etykiet do druku.<br><br>' +
         'Sprawdź czy w którymkolwiek wierszu obu subtabel jednocześnie wypełnione są:<br>' +
         '• ETYKIETA PRODUKTOWA (URL)<br>' +
-        '• ILOŚCI DO PRODUKCJI (liczba > 0)<br><br>' +
-        'Aby zobaczyć strukturę danych z API, dodaj <code>&debug=1</code> do URL tej strony.',
+        '• ILOŚCI DO PRODUKCJI (liczba > 0)',
         true
       );
       return;
@@ -352,7 +326,7 @@ function loadDataAndShowChoice() {
     items.forEach(function(i){ uniqueMap[i.url] = true; });
     state.uniqueUrls = Object.keys(uniqueMap).length;
 
-    showChoiceUI();
+    showReadyUI();
 
   }).catch(function(err) {
     setStatus('Błąd: ' + err.message, true);
@@ -360,15 +334,15 @@ function loadDataAndShowChoice() {
   });
 }
 
-function showChoiceUI() {
+function showReadyUI() {
   document.getElementById('spinner').style.display = 'none';
 
   var warn = '';
   if (state.totalLabels > CONFIG.MAX_LABELS_WARN) {
-    warn = '<br><strong style="color:#c33">⚠️ Duża liczba etykiet</strong> – przetwarzanie może chwilę potrwać.';
+    warn = '<br><strong style="color:#c33">⚠️ Duża liczba etykiet</strong> – ładowanie może chwilę potrwać.';
   }
 
-  document.getElementById('status').innerHTML = '<strong style="font-size:16px">Co chcesz zrobić z etykietami?</strong>';
+  document.getElementById('status').innerHTML = '<strong style="font-size:16px">Etykiety gotowe do wygenerowania</strong>';
 
   var summary = document.getElementById('summary-box');
   summary.innerHTML =
@@ -378,28 +352,32 @@ function showChoiceUI() {
     warn;
   summary.style.display = 'block';
 
-  document.getElementById('choice-buttons').style.display = 'flex';
+  // Wskazówka jak zapisać jako PDF
+  var info = document.getElementById('info-box');
+  info.innerHTML =
+    '<strong>ℹ️ Po wczytaniu etykiet otworzy się okno druku.</strong><br>' +
+    'Aby zapisać jako PDF: w polu „Urządzenie docelowe" wybierz <strong>„Zapisz jako PDF"</strong>, ' +
+    'a następnie kliknij <strong>„Zapisz"</strong>.<br>' +
+    '<small style="color:#888">Przeglądarka zapamięta Twój wybór – przy kolejnych użyciach „Zapisz jako PDF" będzie już domyślnie ustawione.</small>';
+  info.style.display = 'block';
+
+  document.getElementById('actionBtn').style.display = 'inline-block';
   document.getElementById('backBtn').style.display = 'inline-block';
 }
 
-// ============ FAZA 2: ładowanie etykiet i akcja ============
+// ============ FAZA 2: ładowanie etykiet + window.print() ============
 
-function handleChoice(mode) {
-  document.getElementById('choice-buttons').style.display = 'none';
+function startLoading() {
+  document.getElementById('actionBtn').style.display = 'none';
   document.getElementById('backBtn').style.display = 'none';
   document.getElementById('summary-box').style.display = 'none';
+  document.getElementById('info-box').style.display = 'none';
   document.getElementById('spinner').style.display = 'block';
 
-  if (mode === 'print') {
-    runPrintMode();
-  } else if (mode === 'pdf') {
-    runPdfMode();
-  }
+  loadAndPrint();
 }
 
-// ============ TRYB DRUKUJ (iframe + window.print) ============
-
-function runPrintMode() {
+function loadAndPrint() {
   var container = document.getElementById('labels');
   container.innerHTML = '';
   container.style.display = 'block';
@@ -411,7 +389,7 @@ function runPrintMode() {
 
   function updateProgress() {
     var done = loadedCount + failedCount;
-    var msg = 'Ładuję etykiety... <strong>' + done + ' / ' + totalLabels + '</strong>';
+    var msg = 'Wczytuję etykiety... <strong>' + done + ' / ' + totalLabels + '</strong>';
     if (failedCount > 0) msg += ' <span class="err">(' + failedCount + ' błędów)</span>';
     document.getElementById('status').innerHTML = msg;
     setProgress((done / totalLabels) * 100);
@@ -422,7 +400,7 @@ function runPrintMode() {
     hideProgress();
 
     if (failedCount === totalLabels) {
-      setStatus('Nie udało się załadować żadnej etykiety.', true);
+      setStatus('Nie udało się załadować żadnej etykiety. Sprawdź czy URL-e w polach ETYKIETA PRODUKTOWA są poprawne.', true);
       return;
     }
 
@@ -433,9 +411,12 @@ function runPrintMode() {
     document.getElementById('spinner').style.display = 'none';
     setStatus(
       'Załadowano <strong>' + loadedCount + ' / ' + totalLabels + '</strong> etykiet' + failMsg + '.<br>' +
-      'Otwieram dialog druku...'
+      '<strong>Otwieram okno druku...</strong><br>' +
+      '<small style="color:#888">Wybierz „Zapisz jako PDF" jako urządzenie docelowe.</small>'
     );
     document.getElementById('backBtn').style.display = 'inline-block';
+
+    // Krótka pauza żeby zdjęcia/CSS w iframe dokończyły rendering, potem print
     setTimeout(function() { window.print(); }, CONFIG.POST_LOAD_DELAY_MS);
   }
 
@@ -447,7 +428,6 @@ function runPrintMode() {
 
   updateInterval = setInterval(updateProgress, 200);
 
-  // Tryb DRUKUJ używa bezpośrednich URL-i (nie przez proxy) - iframe src nie podlega CORS
   state.items.forEach(function(item) {
     for (var i = 0; i < item.qty; i++) {
       var iframe = document.createElement('iframe');
@@ -461,208 +441,12 @@ function runPrintMode() {
   });
 }
 
-// ============ TRYB POBIERZ PDF (przez proxy + html2canvas + jsPDF) ============
-
-async function runPdfMode() {
-  try {
-    // Weryfikacja proxy
-    if (!CONFIG.PROXY_URL || CONFIG.PROXY_URL.indexOf('TWOJE-KONTO') !== -1) {
-      throw new Error('PROXY_URL nie skonfigurowany. Wpisz URL Cloudflare Workera w sekcji CONFIG na początku pliku.');
-    }
-
-    // Lista unikalnych URL-i
-    var uniqueUrls = [];
-    var seen = {};
-    state.items.forEach(function(item) {
-      if (!seen[item.url]) {
-        seen[item.url] = true;
-        uniqueUrls.push(item.url);
-      }
-    });
-
-    // Renderuj każdy unikalny URL do canvasa
-    var canvases = {};
-    for (var i = 0; i < uniqueUrls.length; i++) {
-      var url = uniqueUrls[i];
-      setStatus('Renderuję szablon <strong>' + (i + 1) + ' / ' + uniqueUrls.length + '</strong>...');
-      setProgress((i / uniqueUrls.length) * 80);
-
-      try {
-        canvases[url] = await renderUrlToCanvas(url);
-      } catch (err) {
-        console.error('Błąd renderowania ' + url + ':', err);
-        canvases[url] = null;
-      }
-    }
-
-    var successCount = Object.keys(canvases).filter(function(u) { return canvases[u]; }).length;
-    if (successCount === 0) {
-      throw new Error('Nie udało się wyrenderować żadnego szablonu. Sprawdź konsolę (F12) dla szczegółów.');
-    }
-
-    // Buduj PDF
-    setStatus('Buduję plik PDF...');
-    setProgress(85);
-    await sleep(50);
-
-    var jsPDF = window.jspdf.jsPDF;
-    var pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-    var firstPage = true;
-    var pageNum = 0;
-    var aliasMap = {};
-    var aliasCounter = 0;
-
-    for (var k = 0; k < state.items.length; k++) {
-      var it = state.items[k];
-      var canvas = canvases[it.url];
-      if (!canvas) continue;
-
-      if (!aliasMap[it.url]) aliasMap[it.url] = 'img_' + (aliasCounter++);
-      var alias = aliasMap[it.url];
-      var imgData = canvas.toDataURL('image/jpeg', CONFIG.PDF_JPEG_QUALITY);
-
-      for (var n = 0; n < it.qty; n++) {
-        if (!firstPage) pdf.addPage();
-        pdf.addImage(imgData, 'JPEG', 0, 0, 210, 297, alias, 'FAST');
-        firstPage = false;
-        pageNum++;
-
-        if (pageNum % 10 === 0) {
-          setStatus('Buduję plik PDF... <strong>' + pageNum + ' / ' + state.totalLabels + '</strong> stron');
-          setProgress(85 + (pageNum / state.totalLabels) * 13);
-          await sleep(10);
-        }
-      }
-    }
-
-    setStatus('Pobieram plik...');
-    setProgress(100);
-    await sleep(100);
-
-    var fileName = 'etykiety_' + state.recordId + '_' + new Date().toISOString().slice(0, 10) + '.pdf';
-    pdf.save(fileName);
-
-    document.getElementById('spinner').style.display = 'none';
-    hideProgress();
-    setStatus(
-      '<strong>✅ Gotowe!</strong><br>' +
-      'PDF został pobrany (' + pageNum + ' stron).<br>' +
-      '<small style="color:#888">Sprawdź folder Pobrane.</small>'
-    );
-    document.getElementById('backBtn').style.display = 'inline-block';
-
-  } catch (err) {
-    console.error(err);
-    setStatus(
-      'Błąd generowania PDF: ' + err.message + '<br><br>' +
-      '<small>Spróbuj użyć opcji <strong>Drukuj</strong> i wybrać „Zapisz jako PDF" w oknie druku.</small>',
-      true
-    );
-  }
-}
-
-// Renderuje pojedynczy URL Ragic etykiety do canvasa
-async function renderUrlToCanvas(url) {
-  // 1. Pobierz HTML przez Cloudflare Worker (omija CORS)
-  var proxiedUrl = viaProxy(url);
-  console.log('[renderUrl] Fetch via proxy:', proxiedUrl);
-
-  var html = await fetch(proxiedUrl).then(function(r) {
-    if (!r.ok) throw new Error('Proxy HTTP ' + r.status + ' dla ' + url);
-    return r.text();
-  });
-
-  // 2. Zamień RELATYWNE URL-e w HTML na ABSOLUTNE, kierując je przez proxy
-  //    (dzięki temu CSS, fonty, obrazy też przejdą przez proxy)
-  var proxyPrefix = CONFIG.PROXY_URL.replace(/\/$/, '') + '/?url=';
-
-  // href="/x" lub src="/x" -> przez proxy
-  html = html.replace(/(href|src)\s*=\s*(["'])(\/[^"']*?)\2/gi, function(match, attr, q, path) {
-    var absolute = CONFIG.RAGIC_ORIGIN + path;
-    return attr + '=' + q + proxyPrefix + encodeURIComponent(absolute) + q;
-  });
-
-  // url("/x") w inline style -> przez proxy
-  html = html.replace(/url\(\s*(["']?)(\/[^"')]*?)\1\s*\)/gi, function(match, q, path) {
-    var absolute = CONFIG.RAGIC_ORIGIN + path;
-    return 'url(' + q + proxyPrefix + encodeURIComponent(absolute) + q + ')';
-  });
-
-  // 3. Wytnij <script> (nie chcemy żeby JS Ragica się wykonywał)
-  html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
-  html = html.replace(/<script\b[^>]*\/>/gi, '');
-
-  // 4. Stwórz ukryty iframe (srcdoc = same-origin = dostęp do DOM przez html2canvas)
-  var iframe = document.createElement('iframe');
-  iframe.style.position = 'absolute';
-  iframe.style.left = '-99999px';
-  iframe.style.top = '0';
-  iframe.style.width = '210mm';
-  iframe.style.height = '297mm';
-  iframe.style.border = 'none';
-  iframe.style.background = 'white';
-  iframe.srcdoc = html;
-  document.body.appendChild(iframe);
-
-  try {
-    // 5. Czekaj na załadowanie iframe
-    await new Promise(function(resolve, reject) {
-      var resolved = false;
-      iframe.onload = function() { if (!resolved) { resolved = true; resolve(); } };
-      iframe.onerror = function() { reject(new Error('iframe error')); };
-      setTimeout(function() { if (!resolved) { resolved = true; resolve(); } }, 15000);
-    });
-
-    var doc = iframe.contentDocument;
-    if (!doc) throw new Error('Brak dostępu do contentDocument iframe');
-
-    // 6. Czekaj na fonty
-    if (doc.fonts && doc.fonts.ready) {
-      try { await doc.fonts.ready; } catch (e) {}
-    }
-
-    // 7. Czekaj na obrazy
-    var images = Array.prototype.slice.call(doc.querySelectorAll('img'));
-    await Promise.all(images.map(function(img) {
-      if (img.complete && img.naturalWidth > 0) return Promise.resolve();
-      return new Promise(function(resolve) {
-        var done = false;
-        var finish = function() { if (!done) { done = true; resolve(); } };
-        img.onload = finish;
-        img.onerror = finish;
-        setTimeout(finish, 8000);
-      });
-    }));
-
-    // Bufor czasu na renderowanie
-    await sleep(1000);
-
-    // 8. Renderuj do canvasa
-    var target = doc.body;
-    var canvas = await html2canvas(target, {
-      scale: CONFIG.PDF_RENDER_SCALE,
-      useCORS: true,
-      allowTaint: true,
-      logging: false,
-      backgroundColor: '#ffffff',
-      width: target.scrollWidth || target.offsetWidth || 794,
-      height: target.scrollHeight || target.offsetHeight || 1123,
-      windowWidth: 794,
-      windowHeight: 1123
-    });
-
-    return canvas;
-  } finally {
-    if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
-  }
-}
-
 // ============ START ============
 
 if (document.readyState === 'complete') {
-  loadDataAndShowChoice();
+  loadDataAndShowButton();
 } else {
-  window.addEventListener('load', loadDataAndShowChoice);
+  window.addEventListener('load', loadDataAndShowButton);
 }
 </script>
 
