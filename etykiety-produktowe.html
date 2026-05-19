@@ -5,7 +5,7 @@
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>Etykiety produktowe [v3]</title>
+<title>Etykiety produktowe [v4]</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
 <style>
@@ -112,7 +112,6 @@
     max-height: 300px; margin-top: 12px;
   }
 
-  /* Kontener z iframe'ami do trybu DRUKUJ */
   #labels {
     padding: 20px 0;
     display: none;
@@ -175,6 +174,10 @@ var CONFIG = {
   BASE_URL: 'https://eu3.ragic.com/AMAZINGGIRL/szwalnia-mg/80',
   API_KEY: 'QUtiQ0QyMGt2cDB0SVI1TlRBOHQrWmJPMTNCY3hJaG5RUnBQU09FdEJRSXVVeU5MdHRvT2Y3ejV1KyttWTZFWGUraTB2NGJ1bm5wVkFOcDV5WURWY0E9PQ==',
 
+  // !!! UZUPEŁNIJ TUTAJ URL TWOJEGO CLOUDFLARE WORKERA !!!
+  // Format: https://NAZWA.TWOJE-KONTO.workers.dev (bez trailing slash, bez /?url=)
+  PROXY_URL: 'https://ragic-proxy.sprzedaz-40c.workers.dev',
+
   URL_FIELD_NAMES: ['ETYKIETA PRODUKTOWA', 'ETYKIETA_PRODUKTOWA'],
   QTY_FIELD_NAMES: [
     'ILOŚCI DO PRODUKCJI', 'ILOSCI DO PRODUKCJI',
@@ -184,9 +187,8 @@ var CONFIG = {
   MAX_LABELS_WARN: 300,
   POST_LOAD_DELAY_MS: 500,
 
-  // Ustawienia renderowania PDF
-  PDF_RENDER_SCALE: 2,       // 1.5-2 = dobry kompromis jakości/rozmiaru
-  PDF_JPEG_QUALITY: 0.85,    // 0.7-0.9
+  PDF_RENDER_SCALE: 2,
+  PDF_JPEG_QUALITY: 0.85,
   RAGIC_ORIGIN: 'https://eu3.ragic.com'
 };
 // =======================================
@@ -231,6 +233,14 @@ function returnToRagic() {
   setTimeout(function() {
     if (window.history.length > 1) window.history.back();
   }, 80);
+}
+
+// Buduje URL przez proxy (zamienia https://eu3.ragic.com/x -> https://worker/?url=https%3A...)
+function viaProxy(url) {
+  if (!CONFIG.PROXY_URL || CONFIG.PROXY_URL.indexOf('TWOJE-KONTO') !== -1) {
+    throw new Error('PROXY_URL nie został skonfigurowany w CONFIG. Wpisz URL swojego Cloudflare Workera.');
+  }
+  return CONFIG.PROXY_URL.replace(/\/$/, '') + '/?url=' + encodeURIComponent(url);
 }
 
 function jsonp(url) {
@@ -437,6 +447,7 @@ function runPrintMode() {
 
   updateInterval = setInterval(updateProgress, 200);
 
+  // Tryb DRUKUJ używa bezpośrednich URL-i (nie przez proxy) - iframe src nie podlega CORS
   state.items.forEach(function(item) {
     for (var i = 0; i < item.qty; i++) {
       var iframe = document.createElement('iframe');
@@ -450,11 +461,16 @@ function runPrintMode() {
   });
 }
 
-// ============ TRYB POBIERZ PDF (html2canvas + jsPDF) ============
+// ============ TRYB POBIERZ PDF (przez proxy + html2canvas + jsPDF) ============
 
 async function runPdfMode() {
   try {
-    // 1. Lista unikalnych URL-i (każdy szablon renderujemy tylko raz)
+    // Weryfikacja proxy
+    if (!CONFIG.PROXY_URL || CONFIG.PROXY_URL.indexOf('TWOJE-KONTO') !== -1) {
+      throw new Error('PROXY_URL nie skonfigurowany. Wpisz URL Cloudflare Workera w sekcji CONFIG na początku pliku.');
+    }
+
+    // Lista unikalnych URL-i
     var uniqueUrls = [];
     var seen = {};
     state.items.forEach(function(item) {
@@ -464,12 +480,12 @@ async function runPdfMode() {
       }
     });
 
-    // 2. Renderuj każdy unikalny URL do canvasa
+    // Renderuj każdy unikalny URL do canvasa
     var canvases = {};
     for (var i = 0; i < uniqueUrls.length; i++) {
       var url = uniqueUrls[i];
       setStatus('Renderuję szablon <strong>' + (i + 1) + ' / ' + uniqueUrls.length + '</strong>...');
-      setProgress((i / uniqueUrls.length) * 80); // 0-80% to renderowanie szablonów
+      setProgress((i / uniqueUrls.length) * 80);
 
       try {
         canvases[url] = await renderUrlToCanvas(url);
@@ -484,10 +500,10 @@ async function runPdfMode() {
       throw new Error('Nie udało się wyrenderować żadnego szablonu. Sprawdź konsolę (F12) dla szczegółów.');
     }
 
-    // 3. Buduj PDF
+    // Buduj PDF
     setStatus('Buduję plik PDF...');
     setProgress(85);
-    await sleep(50); // pozwól UI odświeżyć
+    await sleep(50);
 
     var jsPDF = window.jspdf.jsPDF;
     var pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
@@ -501,10 +517,7 @@ async function runPdfMode() {
       var canvas = canvases[it.url];
       if (!canvas) continue;
 
-      // Przygotuj alias dla deduplikacji obrazu w PDF
-      if (!aliasMap[it.url]) {
-        aliasMap[it.url] = 'img_' + (aliasCounter++);
-      }
+      if (!aliasMap[it.url]) aliasMap[it.url] = 'img_' + (aliasCounter++);
       var alias = aliasMap[it.url];
       var imgData = canvas.toDataURL('image/jpeg', CONFIG.PDF_JPEG_QUALITY);
 
@@ -514,7 +527,6 @@ async function runPdfMode() {
         firstPage = false;
         pageNum++;
 
-        // Co 10 stron - update statusu i yield do UI
         if (pageNum % 10 === 0) {
           setStatus('Buduję plik PDF... <strong>' + pageNum + ' / ' + state.totalLabels + '</strong> stron');
           setProgress(85 + (pageNum / state.totalLabels) * 13);
@@ -523,7 +535,6 @@ async function runPdfMode() {
       }
     }
 
-    // 4. Pobierz plik
     setStatus('Pobieram plik...');
     setProgress(100);
     await sleep(100);
@@ -531,7 +542,6 @@ async function runPdfMode() {
     var fileName = 'etykiety_' + state.recordId + '_' + new Date().toISOString().slice(0, 10) + '.pdf';
     pdf.save(fileName);
 
-    // 5. Komunikat końcowy
     document.getElementById('spinner').style.display = 'none';
     hideProgress();
     setStatus(
@@ -553,27 +563,36 @@ async function runPdfMode() {
 
 // Renderuje pojedynczy URL Ragic etykiety do canvasa
 async function renderUrlToCanvas(url) {
-  // 1. Pobierz HTML strony etykiety
-  var html = await fetch(url, { credentials: 'omit' }).then(function(r) {
-    if (!r.ok) throw new Error('HTTP ' + r.status + ' dla ' + url);
+  // 1. Pobierz HTML przez Cloudflare Worker (omija CORS)
+  var proxiedUrl = viaProxy(url);
+  console.log('[renderUrl] Fetch via proxy:', proxiedUrl);
+
+  var html = await fetch(proxiedUrl).then(function(r) {
+    if (!r.ok) throw new Error('Proxy HTTP ' + r.status + ' dla ' + url);
     return r.text();
   });
 
-  // 2. Wstrzyknij <base> żeby relatywne ścieżki (CSS, obrazy, fonty) działały
-  if (html.indexOf('<head>') !== -1) {
-    html = html.replace('<head>', '<head><base href="' + CONFIG.RAGIC_ORIGIN + '/">');
-  } else if (/<head\s/i.test(html)) {
-    html = html.replace(/(<head\s[^>]*>)/i, '$1<base href="' + CONFIG.RAGIC_ORIGIN + '/">');
-  } else {
-    // Brak <head> - dodaj na początku
-    html = '<head><base href="' + CONFIG.RAGIC_ORIGIN + '/"></head>' + html;
-  }
+  // 2. Zamień RELATYWNE URL-e w HTML na ABSOLUTNE, kierując je przez proxy
+  //    (dzięki temu CSS, fonty, obrazy też przejdą przez proxy)
+  var proxyPrefix = CONFIG.PROXY_URL.replace(/\/$/, '') + '/?url=';
 
-  // 3. Wytnij <script> żeby uniknąć problemów z wykonywaniem JS Ragica
+  // href="/x" lub src="/x" -> przez proxy
+  html = html.replace(/(href|src)\s*=\s*(["'])(\/[^"']*?)\2/gi, function(match, attr, q, path) {
+    var absolute = CONFIG.RAGIC_ORIGIN + path;
+    return attr + '=' + q + proxyPrefix + encodeURIComponent(absolute) + q;
+  });
+
+  // url("/x") w inline style -> przez proxy
+  html = html.replace(/url\(\s*(["']?)(\/[^"')]*?)\1\s*\)/gi, function(match, q, path) {
+    var absolute = CONFIG.RAGIC_ORIGIN + path;
+    return 'url(' + q + proxyPrefix + encodeURIComponent(absolute) + q + ')';
+  });
+
+  // 3. Wytnij <script> (nie chcemy żeby JS Ragica się wykonywał)
   html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
   html = html.replace(/<script\b[^>]*\/>/gi, '');
 
-  // 4. Stwórz ukryty iframe z tym HTML (srcdoc = same-origin = dostęp do DOM)
+  // 4. Stwórz ukryty iframe (srcdoc = same-origin = dostęp do DOM przez html2canvas)
   var iframe = document.createElement('iframe');
   iframe.style.position = 'absolute';
   iframe.style.left = '-99999px';
@@ -594,16 +613,15 @@ async function renderUrlToCanvas(url) {
       setTimeout(function() { if (!resolved) { resolved = true; resolve(); } }, 15000);
     });
 
-    // 6. Czekaj na zasoby (fonty, obrazy)
     var doc = iframe.contentDocument;
-    if (!doc) throw new Error('Brak dostępu do contentDocument iframe (' + url + ')');
+    if (!doc) throw new Error('Brak dostępu do contentDocument iframe');
 
-    // Czekaj na fonty
+    // 6. Czekaj na fonty
     if (doc.fonts && doc.fonts.ready) {
       try { await doc.fonts.ready; } catch (e) {}
     }
 
-    // Czekaj na obrazy
+    // 7. Czekaj na obrazy
     var images = Array.prototype.slice.call(doc.querySelectorAll('img'));
     await Promise.all(images.map(function(img) {
       if (img.complete && img.naturalWidth > 0) return Promise.resolve();
@@ -616,10 +634,10 @@ async function renderUrlToCanvas(url) {
       });
     }));
 
-    // Dodatkowy bufor czasu na renderowanie
-    await sleep(800);
+    // Bufor czasu na renderowanie
+    await sleep(1000);
 
-    // 7. Renderuj do canvasa
+    // 8. Renderuj do canvasa
     var target = doc.body;
     var canvas = await html2canvas(target, {
       scale: CONFIG.PDF_RENDER_SCALE,
@@ -635,7 +653,6 @@ async function renderUrlToCanvas(url) {
 
     return canvas;
   } finally {
-    // 8. Sprzątanie - usuń iframe nawet jeśli był błąd
     if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
   }
 }
