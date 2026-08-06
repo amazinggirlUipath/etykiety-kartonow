@@ -45,7 +45,9 @@ export default {
     if (!Object.prototype.hasOwnProperty.call(SHEETS, sheet)) {
       return json({ error: 'Nieznany parametr sheet' }, 400, cors);
     }
-    if (!/^\d{1,12}$/.test(recordId)) {
+    // Krotki limit celowo: Ragic przy bardzo duzym recordId (11+ cyfr)
+    // przepelnia parser i zamiast pustki oddaje listing 1000 rekordow.
+    if (!/^\d{1,9}$/.test(recordId)) {
       return json({ error: 'Nieprawidlowy recordId' }, 400, cors);
     }
     if (!env.RAGIC_API_KEY) {
@@ -77,6 +79,22 @@ export default {
         502,
         cors
       );
+    }
+
+    // Twarda gwarancja "jeden rekord na zapytanie". Nie ufamy temu, ze walidacja
+    // wejscia wylapie kazdy przyszly dziwny przypadek po stronie Ragica - jesli
+    // odpowiedz zawiera wiecej niz jeden rekord, nie przepuszczamy jej dalej.
+    let parsed;
+    try {
+      parsed = JSON.parse(body);
+    } catch (err) {
+      return json({ error: 'Ragic API zwrocilo nieparsowalna odpowiedz' }, 502, cors);
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return json({ error: 'Nieoczekiwany ksztalt odpowiedzi Ragic API' }, 502, cors);
+    }
+    if (Object.keys(parsed).length > 1) {
+      return json({ error: 'Odpowiedz zawiera wiele rekordow - odrzucona' }, 502, cors);
     }
 
     return new Response(body, {
