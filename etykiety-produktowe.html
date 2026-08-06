@@ -166,8 +166,10 @@
 <script>
 // ============ KONFIGURACJA ============
 var CONFIG = {
-  BASE_URL: 'https://eu3.ragic.com/AMAZINGGIRL/szwalnia-mg/80',
-  API_KEY: 'QUtiQ0QyMGt2cDB0SVI1TlRBOHQrWmJPMTNCY3hJaG5RUnBQU09FdEJRSXVVeU5MdHRvT2Y3ejV1KyttWTZFWGUraTB2NGJ1bm5wVkFOcDV5WURWY0E9PQ==',
+  // Adres proxy (Cloudflare Worker). Klucz API Ragica siedzi po stronie
+  // workera jako sekret i nigdy nie trafia do przeglądarki.
+  API_URL: 'https://ragic-proxy.sprzedaz-40c.workers.dev/ragic',
+  SHEET: 'szwalnia',
 
   URL_FIELD_NAMES: ['ETYKIETA PRODUKTOWA', 'ETYKIETA_PRODUKTOWA'],
   QTY_FIELD_NAMES: [
@@ -222,33 +224,48 @@ function returnToRagic() {
   }, 80);
 }
 
-function jsonp(url) {
-  return new Promise(function(resolve, reject) {
-    var callbackName = 'ragicCb_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
-    var script = document.createElement('script');
-    var timeout = setTimeout(function() {
-      reject(new Error('Timeout - Ragic API nie odpowiada w ciągu 15s'));
-      cleanup();
-    }, 15000);
+// Pobranie rekordu przez proxy. JSONP już nie jest potrzebny - worker
+// odsyła nagłówki CORS, więc wystarczy zwykły fetch.
+function fetchRecord(recordId) {
+  var url = CONFIG.API_URL +
+            '?sheet=' + encodeURIComponent(CONFIG.SHEET) +
+            '&recordId=' + encodeURIComponent(recordId);
 
-    function cleanup() {
-      clearTimeout(timeout);
-      delete window[callbackName];
-      if (script.parentNode) script.parentNode.removeChild(script);
+  var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  var timedOut = false;
+  var timeout = setTimeout(function() {
+    timedOut = true;
+    if (controller) controller.abort();
+  }, 15000);
+
+  var opts = { cache: 'no-store' };
+  if (controller) opts.signal = controller.signal;
+
+  return fetch(url, opts).then(function(res) {
+    return res.text().then(function(text) {
+      var payload;
+      try {
+        payload = JSON.parse(text);
+      } catch (e) {
+        throw new Error('Proxy zwróciło nieprawidłową odpowiedź (HTTP ' + res.status + ')');
+      }
+      if (!res.ok) {
+        throw new Error(payload.error || ('Błąd proxy (HTTP ' + res.status + ')'));
+      }
+      return payload;
+    });
+  }).catch(function(err) {
+    if (timedOut) throw new Error('Timeout - proxy nie odpowiada w ciągu 15s');
+    if (err instanceof TypeError) {
+      throw new Error('Nie udało się połączyć z proxy. Sprawdź API_URL i ALLOWED_ORIGINS w workerze.');
     }
-
-    window[callbackName] = function(data) {
-      resolve(data);
-      cleanup();
-    };
-
-    var sep = url.indexOf('?') === -1 ? '?' : '&';
-    script.src = url + sep + 'callback=' + callbackName;
-    script.onerror = function() {
-      reject(new Error('Nie udało się połączyć z Ragic API.'));
-      cleanup();
-    };
-    document.head.appendChild(script);
+    throw err;
+  }).then(function(data) {
+    clearTimeout(timeout);
+    return data;
+  }, function(err) {
+    clearTimeout(timeout);
+    throw err;
   });
 }
 
@@ -275,11 +292,7 @@ function loadDataAndShowButton() {
 
   setStatus('Pobieram dane z Ragic...');
 
-  var apiUrl = CONFIG.BASE_URL + '/' + recordId +
-               '?api&v=3&APIKey=' + encodeURIComponent(CONFIG.API_KEY) +
-               '&naming=fname';
-
-  jsonp(apiUrl).then(function(data) {
+  fetchRecord(recordId).then(function(data) {
     var topKeys = Object.keys(data);
     if (topKeys.length === 1 && /^\d+$/.test(topKeys[0]) && typeof data[topKeys[0]] === 'object') {
       data = data[topKeys[0]];

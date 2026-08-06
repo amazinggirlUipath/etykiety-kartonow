@@ -1,0 +1,11 @@
+name = "ragic-proxy"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+# Bez adresow podgladowych - jeden publiczny endpoint wystarczy.
+preview_urls = false
+
+# Klucz API trzymamy jako sekret (wrangler secret put RAGIC_API_KEY),
+# NIGDY tutaj - ten plik leci do publicznego repo.
+[vars]
+ALLOWED_ORIGINS = "https://amazinggirluipath.github.io"

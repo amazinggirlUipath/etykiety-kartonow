@@ -1,0 +1,5 @@
+node_modules/
+.wrangler/
+# lokalne sekrety wranglera - NIGDY do repo
+.dev.vars
+*.dev.vars
