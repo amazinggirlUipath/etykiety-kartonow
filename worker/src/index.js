@@ -93,6 +93,18 @@ export default {
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return json({ error: 'Nieoczekiwany ksztalt odpowiedzi Ragic API' }, 502, cors);
     }
+
+    // Ragic przy zlym/wygaslym kluczu odpowiada HTTP 200 z {"status":"ERROR"}.
+    // Bez tego przypadku wygladaloby to jak blad ksztaltu odpowiedzi i wysylalo
+    // diagnoze w zla strone - a to najbardziej prawdopodobny objaw po rotacji.
+    // Komunikat Ragica NIE jest przepuszczany dalej, tylko wlasny.
+    if (parsed.status === 'ERROR') {
+      return json(
+        { error: 'Ragic odrzucil zapytanie - sprawdz sekret RAGIC_API_KEY i uprawnienia uzytkownika do arkusza' },
+        502,
+        cors
+      );
+    }
     if (Object.keys(parsed).length > 1) {
       return json({ error: 'Odpowiedz zawiera wiele rekordow - odrzucona' }, 502, cors);
     }

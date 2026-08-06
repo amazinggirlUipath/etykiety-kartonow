@@ -3,3 +3,6 @@ node_modules/
 # lokalne sekrety wranglera - NIGDY do repo
 .dev.vars
 *.dev.vars
+
+# artefakty testowe curl
+worker/*.txt
